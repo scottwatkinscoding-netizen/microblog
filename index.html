@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sovereign Microblog</title>
+    <style>
+        :root {
+            --bg: #121212;
+            --surface: #1e1e1e;
+            --text: #e0e0e0;
+            --accent: #bb86fc;
+            --border: #333;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+            line-height: 1.5;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 1rem;
+            margin-bottom: 2rem;
+        }
+        h1 { font-size: 1.5rem; margin: 0; color: var(--accent); }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            padding: 1.25rem;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+        }
+        textarea, input[type="text"], input[type="password"] {
+            width: 100%;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 4px;
+            padding: 0.5rem;
+            margin-bottom: 1rem;
+            box-sizing: border-box;
+            font-family: inherit;
+        }
+        textarea { height: 90px; resize: vertical; }
+        button {
+            background: var(--accent);
+            color: #000;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        button:hover { opacity: 0.9; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .secondary-btn {
+            background: transparent;
+            color: #888;
+            border: 1px solid var(--border);
+            font-size: 0.8rem;
+            padding: 0.25rem 0.5rem;
+        }
+        .post {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .post-date {
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 0.5rem;
+        }
+        .hidden { display: none !important; }
+        a { color: var(--accent); }
+    </style>
+</head>
+<body>
+
+    <!-- SETUP WIZARD -->
+    <div id="setupWizard" class="card hidden">
+        <h2>Welcome to Your Microblog</h2>
+        <p>Let's connect this page to your GitHub repository. Data and feed files will be initialized automatically!</p>
+        <form id="configForm">
+            <label>GitHub Username:</label>
+            <input type="text" id="ghOwner" placeholder="e.g. username" required>
+            
+            <label>Repository Name:</label>
+            <input type="text" id="ghRepo" placeholder="e.g. my-microblog" required>
+            
+            <label>Personal Access Token (<a href="https://github.com/settings/tokens/new?scopes=repo" target="_blank">Create one here with repo scope</a>):</label>
+            <input type="password" id="ghToken" placeholder="github_pat_..." required>
+            
+            <button type="submit" id="setupBtn">Save & Initialize Files</button>
+        </form>
+    </div>
+
+    <!-- MAIN APP INTERFACE -->
+    <div id="mainApp" class="hidden">
+        <header>
+            <h1>Microblog</h1>
+            <div>
+                <a href="feed.xml" style="text-decoration:none; margin-right: 1rem; font-size: 0.9rem;" target="_blank">RSS Feed</a>
+                <button class="secondary-btn" onclick="resetConfig()">Reset Config</button>
+            </div>
+        </header>
+
+        <div class="card">
+            <h3>New Post</h3>
+            <form id="newPostForm">
+                <textarea id="postContent" placeholder="What's happening?" required></textarea>
+                <button type="submit" id="publishBtn">Publish Post</button>
+            </form>
+        </div>
+
+        <div id="timeline">
+            <p>Loading posts...</p>
+        </div>
+    </div>
+
+    <script>
+        function getConfig() {
+            const configStr = localStorage.getItem('microblog_config');
+            return configStr ? JSON.parse(configStr) : null;
+        }
+
+        function resetConfig() {
+            if (confirm("Disconnect this browser from your GitHub repository?")) {
+                localStorage.removeItem('microblog_config');
+                location.reload();
+            }
+        }
+
+        // Initialize UI State
+        const config = getConfig();
+        if (!config) {
+            document.getElementById('setupWizard').classList.remove('hidden');
+        } else {
+            document.getElementById('mainApp').classList.remove('hidden');
+            loadPosts();
+        }
+
+        // Handle Setup Submission & File Initialization
+        document.getElementById('configForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('setupBtn');
+            btn.disabled = true;
+            btn.innerText = "Checking repository files...";
+
+            const owner = document.getElementById('ghOwner').value.trim();
+            const repo = document.getElementById('ghRepo').value.trim();
+            const token = document.getElementById('ghToken').value.trim();
+
+            try {
+                // 1. Check or create posts.json
+                await ensureFileExists(owner, repo, token, "posts.json", JSON.stringify([], null, 2), "Initialize posts.json");
+
+                // 2. Check or create feed.xml
+                const defaultFeed = generateRSS(owner, repo, []);
+                await ensureFileExists(owner, repo, token, "feed.xml", defaultFeed, "Initialize feed.xml");
+
+                // Save configuration
+                const newConfig = { owner, repo, token };
+                localStorage.setItem('microblog_config', JSON.stringify(newConfig));
+                
+                alert('Setup successful! Files verified/created.');
+                location.reload();
+
+            } catch (err) {
+                alert("Setup Error: " + err.message);
+                btn.disabled = false;
+                btn.innerText = "Save & Initialize Files";
+            }
+        });
+
+        async function ensureFileExists(owner, repo, token, path, content, message) {
+            const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+            const res = await fetch(url, {
+                headers: { "Authorization": `Bearer ${token}` }
+            });
+
+            if (res.status === 404) {
+                const putRes = await fetch(url, {
+                    method: "PUT",
+                    headers: {
+                        "Authorization": `Bearer ${token}`,
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        content: btoa(unescape(encodeURIComponent(content)))
+                    })
+                });
+                if (!putRes.ok) throw new Error(`Failed to create missing file: ${path}`);
+            } else if (!res.ok) {
+                throw new Error(`Could not access repository. Verify your token permissions and repository name.`);
+            }
+        }
+
+        // RSS Generator Helper
+        function generateRSS(owner, repo, posts) {
+            const siteUrl = `https://${owner}.github.io/${repo}/`;
+            const items = posts.map(p => {
+                const title = escapeXml(p.content.length > 50 ? p.content.substring(0, 47) + "..." : p.content);
+                const description = escapeXml(p.content);
+                const pubDate = new Date(p.published_at).toUTCString();
+                const guid = p.id;
+                return `    <item>
+        <title>${title}</title>
+        <link>${siteUrl}</link>
+        <description>${description}</description>
+        <pubDate>${pubDate}</pubDate>
+        <guid>${guid}</guid>
+    </item>`;
+            }).join('\n');
+
+            return `<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+<channel>
+    <title>My Microblog</title>
+    <link>${siteUrl}</link>
+    <description>A sovereign static microblog node.</description>
+    <language>en-us</language>
+${items}
+</channel>
+</rss>`;
+        }
+
+        function escapeXml(str) {
+            return str.replace(/&/g, '&amp;')
+                      .replace(/</g, '&lt;')
+                      .replace(/>/g, '&gt;')
+                      .replace(/"/g, '&quot;')
+                      .replace(/'/g, '&apos;');
+        }
+
+        // Load Posts from posts.json
+        async function loadPosts() {
+            try {
+                const res = await fetch('posts.json?t=' + Date.now());
+                if (!res.ok) throw new Error("Could not fetch posts.json");
+                const posts = await res.json();
+                const timeline = document.getElementById('timeline');
+                
+                if (!posts || posts.length === 0) {
+                    timeline.innerHTML = "<p>No posts found yet. Write your first one above!</p>";
+                    return;
+                }
+
+                timeline.innerHTML = posts.map(p => `
+                    <div class="post">
+                        <div>${escapeHtml(p.content)}</div>
+                        <div class="post-date">${new Date(p.published_at).toLocaleString()}</div>
+                    </div>
+                `).join('');
+            } catch (err) {
+                document.getElementById('timeline').innerHTML = "<p>Error loading timeline feed. Make sure GitHub Pages has finished its initial build.</p>";
+            }
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        // Helper to update any file via GitHub API (fetches latest SHA automatically)
+        async function updateFileOnGitHub(owner, repo, token, path, content, message) {
+            const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+            
+            // Get current SHA
+            let sha = null;
+            const getRes = await fetch(url, {
+                headers: { "Authorization": `Bearer ${token}` }
+            });
+            if (getRes.ok) {
+                const fileData = await getRes.json();
+                sha = fileData.sha;
+            }
+
+            const putRes = await fetch(url, {
+                method: "PUT",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    message: message,
+                    content: btoa(unescape(encodeURIComponent(content))),
+                    sha: sha
+                })
+            });
+
+            if (!putRes.ok) throw new Error(`Failed to update ${path}`);
+        }
+
+        // Publish Post Logic (Updates both posts.json and feed.xml)
+        document.getElementById('newPostForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const contentEl = document.getElementById('postContent');
+            const btnEl = document.getElementById('publishBtn');
+            const content = contentEl.value.trim();
+            if (!content) return;
+
+            btnEl.disabled = true;
+            btnEl.innerText = "Publishing...";
+
+            const { owner, repo, token } = getConfig();
+
+            try {
+                // 1. Fetch current posts.json to get its contents
+                const postsUrl = `https://api.github.com/repos/${owner}/${repo}/contents/posts.json`;
+                const getRes = await fetch(postsUrl, {
+                    headers: { "Authorization": `Bearer ${token}` }
+                });
+                
+                if (!getRes.ok) throw new Error("Authentication failed or repository not found.");
+                const fileData = await getRes.json();
+                
+                let posts = [];
+                if (fileData.content) {
+                    const decoded = decodeURIComponent(escape(atob(fileData.content.replace(/\s/g, ''))));
+                    posts = JSON.parse(decoded);
+                }
+
+                // 2. Prepend the new post entry
+                const newPost = {
+                    id: "urn:uuid:" + crypto.randomUUID(),
+                    content: content,
+                    published_at: new Date().toISOString(),
+                    type: "post"
+                };
+                posts.unshift(newPost);
+
+                // 3. Update posts.json on GitHub
+                await updateFileOnGitHub(
+                    owner, repo, token, 
+                    "posts.json", 
+                    JSON.stringify(posts, null, 2), 
+                    `Add microblog post ${newPost.id}`
+                );
+
+                // 4. Regenerate and update feed.xml on GitHub
+                const updatedRSS = generateRSS(owner, repo, posts);
+                await updateFileOnGitHub(
+                    owner, repo, token, 
+                    "feed.xml", 
+                    updatedRSS, 
+                    `Update RSS feed for post ${newPost.id}`
+                );
+
+                alert("Published! Both posts.json and feed.xml have been updated. GitHub Pages is rebuilding.");
+                contentEl.value = "";
+                setTimeout(() => location.reload(), 4000);
+
+            } catch (err) {
+                alert("Error: " + err.message);
+                btnEl.disabled = false;
+                btnEl.innerText = "Publish Post";
+            }
+        });
+    </script>
+</body>
+</html>
