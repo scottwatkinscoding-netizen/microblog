@@ -5,6 +5,12 @@
     <link>https://scottwatkinscoding-netizen.github.io/microblog/</link>
     <description>A sovereign static microblog node.</description>
     <language>en-us</language>
-
+    <item>
+        <title>I am a space robot</title>
+        <link>https://scottwatkinscoding-netizen.github.io/microblog/</link>
+        <description>I am a space robot</description>
+        <pubDate>Sun, 11 Oct 2026 13:10:03 GMT</pubDate>
+        <guid>urn:uuid:ebb1cdb4-e566-4fc4-aceb-87e416907695</guid>
+    </item>
 </channel>
 </rss>
